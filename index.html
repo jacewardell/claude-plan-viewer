@@ -374,7 +374,10 @@
       const moved = results.filter(r => r.moved);
       if (activePlan) {
         const m = moved.find(r => r.filename === activePlan.filename);
-        if (m) activePlan.type = m.newType;
+        if (m) {
+          activePlan.type = m.newType;
+          location.hash = `#${m.newType}/${encodeURIComponent(activePlan.filename)}`;
+        }
       }
 
       exitSelectMode();
@@ -398,9 +401,10 @@
       });
 
       if (activePlan && plans.some(p => p.filename === activePlan.filename && p.type === activePlan.type)) {
+        activePlan = null;
+        location.hash = '';
         content.classList.add('empty');
         content.innerHTML = '<span>Select a plan to view</span>';
-        activePlan = null;
       }
 
       exitSelectMode();
@@ -443,8 +447,17 @@
       planList.innerHTML = html || '<li class="plan-item">No plans found</li>';
     }
 
-    async function loadPlan(filename, type) {
+    async function loadPlan(filename, type, skipHash) {
       const res = await fetch(`/api/plans/${encodeURIComponent(filename)}?type=${type}`);
+
+      if (!res.ok) {
+        content.classList.add('empty');
+        content.innerHTML = '<span>Plan not found</span>';
+        activePlan = null;
+        if (!skipHash) location.hash = '';
+        return;
+      }
+
       const markdown = await res.text();
 
       content.classList.remove('empty');
@@ -454,7 +467,37 @@
         el.classList.toggle('active', el.dataset.file === filename && el.dataset.type === type);
       });
       activePlan = { filename, type };
+
+      if (!skipHash) {
+        const hash = `#${type}/${encodeURIComponent(filename)}`;
+        if (location.hash !== hash) location.hash = hash;
+      }
     }
+
+    function parseHash() {
+      const raw = location.hash.replace(/^#/, '');
+      if (!raw) return null;
+      const slash = raw.indexOf('/');
+      if (slash === -1) return null;
+      const type = raw.slice(0, slash);
+      const filename = decodeURIComponent(raw.slice(slash + 1));
+      if (!filename) return null;
+      return { type, filename };
+    }
+
+    function routeFromHash() {
+      const route = parseHash();
+      if (route) {
+        loadPlan(route.filename, route.type, true);
+      } else {
+        content.classList.add('empty');
+        content.innerHTML = '<span>Select a plan to view</span>';
+        activePlan = null;
+        document.querySelectorAll('.plan-item.active').forEach(el => el.classList.remove('active'));
+      }
+    }
+
+    window.addEventListener('hashchange', routeFromHash);
 
     planList.addEventListener('click', e => {
       if (e.target.classList.contains('checkbox')) return;
@@ -528,6 +571,7 @@
 
       if (activePlan && activePlan.filename === filename && activePlan.type === type) {
         activePlan.type = result.newType;
+        location.hash = `#${result.newType}/${encodeURIComponent(filename)}`;
       }
       loadPlans();
     });
@@ -546,16 +590,17 @@
       });
 
       if (activePlan && activePlan.filename === filename && activePlan.type === type) {
+        activePlan = null;
+        location.hash = '';
         content.classList.add('empty');
         content.innerHTML = '<span>Select a plan to view</span>';
-        activePlan = null;
       }
       loadPlans();
     });
 
     document.addEventListener('click', () => contextMenu.classList.remove('visible'));
 
-    loadPlans();
+    loadPlans().then(routeFromHash);
   </script>
 </body>
 </html>
