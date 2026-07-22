@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Claude Plans</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -106,6 +107,60 @@
     .plan-date {
       font-size: 11px;
       color: #888;
+    }
+
+    .search-bar {
+      padding: 12px 20px;
+      border-bottom: 1px solid #0f3460;
+      position: relative;
+    }
+
+    .search-bar input {
+      width: 100%;
+      padding: 8px 28px 8px 10px;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      background: #1a1a2e;
+      color: #eee;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .search-bar input::placeholder { color: #667; }
+    .search-bar input:focus { border-color: #e94560; }
+    .search-bar input::-webkit-search-cancel-button { display: none; }
+
+    .search-clear {
+      position: absolute;
+      right: 26px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: #8892b0;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 2px 4px;
+      display: none;
+    }
+
+    .search-clear:hover { color: #e94560; }
+    .search-bar.has-text .search-clear { display: block; }
+
+    .plan-snippet {
+      font-size: 11px;
+      color: #8892b0;
+      margin-top: 4px;
+      word-break: break-word;
+    }
+
+    mark {
+      background: #e94560;
+      color: #fff;
+      border-radius: 2px;
+      padding: 0 1px;
     }
 
     .sidebar-actions {
@@ -249,6 +304,10 @@
   <div class="container">
     <aside class="sidebar">
       <h1>📋 Claude Plans</h1>
+      <div class="search-bar">
+        <input type="search" id="searchInput" placeholder="Search titles &amp; content…" autocomplete="off">
+        <button class="search-clear" id="searchClear" title="Clear search" aria-label="Clear search">✕</button>
+      </div>
       <div class="sidebar-actions">
         <button class="select-btn" onclick="enterSelectMode()">Select</button>
         <button class="cancel-btn" onclick="exitSelectMode()">Cancel</button>
@@ -277,7 +336,35 @@
     let selectMode = false;
     const selected = new Set();
 
+    const searchInput = document.getElementById('searchInput');
+    const searchBar = document.querySelector('.search-bar');
+    const searchClear = document.getElementById('searchClear');
+    let searchQuery = '';
+    let searchDebounce = null;
+
     const collapsed = JSON.parse(localStorage.getItem('collapsedSections') || '{}');
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function highlight(text, query) {
+      const escaped = escapeHtml(text);
+      if (!query) return escaped;
+      const q = query.toLowerCase();
+      const lower = text.toLowerCase();
+      let out = '', i = 0;
+      while (i < text.length) {
+        const idx = lower.indexOf(q, i);
+        if (idx === -1) { out += escapeHtml(text.slice(i)); break; }
+        out += escapeHtml(text.slice(i, idx));
+        out += '<mark>' + escapeHtml(text.slice(idx, idx + q.length)) + '</mark>';
+        i = idx + q.length;
+      }
+      return out;
+    }
 
     function copyToClipboard(text, btn) {
       const showSuccess = () => {
@@ -411,21 +498,19 @@
       loadPlans();
     }
 
-    async function loadPlans() {
-      const res = await fetch('/api/plans');
-      const { longTerm, shortTerm } = await res.json();
-
+    function renderPlanList(longTerm, shortTerm, query) {
       const renderPlan = p => `
-        <li class="plan-item" data-file="${p.filename}" data-type="${p.type}">
+        <li class="plan-item" data-file="${escapeHtml(p.filename)}" data-type="${p.type}">
           <input type="checkbox" class="checkbox" tabindex="-1">
           <div class="plan-info">
             <div class="plan-name">
-              <span class="plan-name-text">${p.name}</span>
-              <button class="copy-btn" title="Copy name" data-name="${p.name.replace(/"/g, '&quot;')}">📋</button>
+              <span class="plan-name-text">${highlight(p.name, query)}</span>
+              <button class="copy-btn" title="Copy name" data-name="${escapeHtml(p.name)}">📋</button>
             </div>
             <div class="plan-date">${new Date(p.modified).toLocaleDateString('en-US', {
               month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
             })}</div>
+            ${p.snippet ? `<div class="plan-snippet">${highlight(p.snippet, query)}</div>` : ''}
           </div>
         </li>`;
 
@@ -444,8 +529,63 @@
 
       let html = renderSection('long-term', '📁', 'Long-term', longTerm);
       html += renderSection('short-term', '📝', 'Short-term', shortTerm);
-      planList.innerHTML = html || '<li class="plan-item">No plans found</li>';
+      const empty = query ? 'No matching plans' : 'No plans found';
+      planList.innerHTML = html || `<li class="plan-item">${empty}</li>`;
+
+      if (activePlan) {
+        document.querySelectorAll('.plan-item').forEach(el => {
+          el.classList.toggle('active', el.dataset.file === activePlan.filename && el.dataset.type === activePlan.type);
+        });
+      }
     }
+
+    async function loadPlans() {
+      if (searchQuery) return runSearch();
+      const res = await fetch('/api/plans');
+      const { longTerm, shortTerm } = await res.json();
+      renderPlanList(longTerm, shortTerm, '');
+    }
+
+    async function runSearch() {
+      const q = searchQuery;
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      const { longTerm, shortTerm } = await res.json();
+      if (q !== searchQuery) return; // a newer query superseded this one
+      renderPlanList(longTerm, shortTerm, q);
+    }
+
+    function clearSearch(blur) {
+      searchInput.value = '';
+      searchQuery = '';
+      searchBar.classList.remove('has-text');
+      clearTimeout(searchDebounce);
+      loadPlans();
+      if (blur) searchInput.blur();
+      else searchInput.focus();
+    }
+
+    searchInput.addEventListener('input', () => {
+      searchQuery = searchInput.value.trim();
+      searchBar.classList.toggle('has-text', searchInput.value.length > 0);
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        if (searchQuery) runSearch();
+        else loadPlans();
+      }, 200);
+    });
+
+    searchClear.addEventListener('click', () => clearSearch(false));
+
+    searchInput.addEventListener('keydown', e => {
+      if (e.key === 'Escape') clearSearch(true);
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === '/' && document.activeElement !== searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+      }
+    });
 
     async function loadPlan(filename, type, skipHash) {
       const res = await fetch(`/api/plans/${encodeURIComponent(filename)}?type=${type}`);

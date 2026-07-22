@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const SHORT_TERM_DIR = path.join(process.env.HOME, '.claude', 'plans');
-const LONG_TERM_DIR = path.join(process.env.HOME, 'Projects', 'plans');
+const LONG_TERM_DIR = path.join(process.env.HOME, '.claude', 'longterm-plans');
 const PORT = 3333;
 
 const MIME_TYPES = {
@@ -44,6 +44,51 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
+    return;
+  }
+
+  // API: Search plans by title and content
+  if (req.method === 'GET' && url.pathname === '/api/search') {
+    const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+
+    const searchDir = (dir, type) => {
+      if (!q || !fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir)
+        .filter(f => f.endsWith('.md'))
+        .map(f => {
+          const filepath = path.join(dir, f);
+          const name = f.replace('.md', '');
+          const titleMatch = name.toLowerCase().includes(q);
+          let content = '';
+          try { content = fs.readFileSync(filepath, 'utf8'); } catch { return null; }
+          const idx = content.toLowerCase().indexOf(q);
+          const contentMatch = idx !== -1;
+          if (!titleMatch && !contentMatch) return null;
+
+          let snippet = null;
+          if (contentMatch) {
+            const lineStart = content.lastIndexOf('\n', idx) + 1;
+            let lineEnd = content.indexOf('\n', idx);
+            if (lineEnd === -1) lineEnd = content.length;
+            const line = content.slice(lineStart, lineEnd);
+            const rel = idx - lineStart;
+            const start = Math.max(0, rel - 50);
+            const end = Math.min(line.length, rel + q.length + 70);
+            snippet = (start > 0 ? '…' : '') + line.slice(start, end).trim() + (end < line.length ? '…' : '');
+          }
+
+          const stats = fs.statSync(filepath);
+          return { name, filename: f, type, modified: stats.mtime, titleMatch, contentMatch, snippet };
+        })
+        .filter(Boolean)
+        .sort((a, b) => new Date(b.modified) - new Date(a.modified));
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      longTerm: searchDir(LONG_TERM_DIR, 'long-term'),
+      shortTerm: searchDir(SHORT_TERM_DIR, 'short-term')
+    }));
     return;
   }
 
